@@ -938,11 +938,8 @@ contract DividendStakingToken is ERC20 {
 
 
 
-contract PawFlexibleStake is Ownable, ReentrancyGuard, DividendStakingToken {
+contract PawSushiLPStake is Ownable, ReentrancyGuard, DividendStakingToken {
     using SafeERC20 for IERC20Metadata;
-
-    // apy
-    uint256 public apy;
 
     // Accrued token per share
     uint256 public accTokenPerShare;
@@ -950,16 +947,22 @@ contract PawFlexibleStake is Ownable, ReentrancyGuard, DividendStakingToken {
     // The block number of the last pool update
     uint256 public lastRewardTimeStamp;
 
+    // reward tokens created per second.
+    uint256 public rewardPerTimeStamp;
+
     // The precision factor
     uint256 public PRECISION_FACTOR = uint256(10**12);
+
+    //PAW
+    IERC20Metadata public PAWToken;
 
     // The reward token
     IERC20Metadata public wPAWToken;
 
     // The staked token
-    IERC20Metadata public PAWToken;
+    IERC20Metadata public lpToken;
 
-    // Info of each user that stakes tokens (PAWToken)
+    // Info of each user that stakes tokens (lpToken)
     mapping(address => UserInfo) public userInfo;
 
     struct UserInfo {
@@ -969,7 +972,7 @@ contract PawFlexibleStake is Ownable, ReentrancyGuard, DividendStakingToken {
 
     event Deposit(address indexed user, uint256 amount);
     event EmergencyWithdraw(address indexed user, uint256 amount);
-    event NewAPY(uint256 apy);
+    event NewRewardPerTimeStamp(uint256 rewardPerTimeStamp);
     event TokenRecovery(address indexed token, uint256 amount);
     event Withdraw(address indexed user, uint256 amount);
     event Claim(address indexed user, uint256 amount);
@@ -977,13 +980,14 @@ contract PawFlexibleStake is Ownable, ReentrancyGuard, DividendStakingToken {
     /**
      * @notice Constructor
      */
-    constructor()  DividendStakingToken("Paw Stake Tracker", "stPAWflex") {
+    constructor()  DividendStakingToken("Paw Stake Tracker", "stPAWsslp") {
+        lpToken = IERC20Metadata(0x0dBa3dfeE43d9B6450C716c58fdAE8D3BE37FdC9); //SushiSwap PAW-ETH
         PAWToken = IERC20Metadata(0xDc63269eA166b70d4780b3A11F5C825C2b761B01); //PAW
         wPAWToken = IERC20Metadata(0x083Af0FB9A8982E09e43AC718aeA9773E28c7f06); //wPAW
         // Set the lastRewardTimeStamp as the current timestamp
         lastRewardTimeStamp = block.timestamp;
 
-        apy = 3; // 3%
+        rewardPerTimeStamp = 1 * (10**(wPAWToken.decimals())); // at the beginning, start with 1 wPAW per second
     }
 
     /*
@@ -1005,7 +1009,7 @@ contract PawFlexibleStake is Ownable, ReentrancyGuard, DividendStakingToken {
         if (_amount > 0) {
             user.amount = user.amount + _amount;
             _setDividendBalance(msg.sender, user.amount);
-            PAWToken.safeTransferFrom(address(msg.sender), address(this), _amount);
+            lpToken.safeTransferFrom(address(msg.sender), address(this), _amount);
         }
 
         user.rewardDebt = (user.amount * accTokenPerShare) / PRECISION_FACTOR;
@@ -1028,7 +1032,7 @@ contract PawFlexibleStake is Ownable, ReentrancyGuard, DividendStakingToken {
         if (_amount > 0) {
             user.amount = user.amount - _amount;
             _setDividendBalance(msg.sender, user.amount);
-            PAWToken.safeTransfer(address(msg.sender), _amount);
+            lpToken.safeTransfer(address(msg.sender), _amount);
         }
 
         if (pending > 0) {
@@ -1075,7 +1079,7 @@ contract PawFlexibleStake is Ownable, ReentrancyGuard, DividendStakingToken {
         user.rewardDebt = 0;
 
         if (amountToTransfer > 0) {
-            PAWToken.safeTransfer(address(msg.sender), amountToTransfer);
+            lpToken.safeTransfer(address(msg.sender), amountToTransfer);
         }
         _setDividendBalance(msg.sender, user.amount);
         emit EmergencyWithdraw(msg.sender, user.amount);
@@ -1097,7 +1101,7 @@ contract PawFlexibleStake is Ownable, ReentrancyGuard, DividendStakingToken {
      * @dev Callable by owner
      */
     function recoverToken(address _token) external onlyOwner {
-        require(_token != address(PAWToken), "Operations: Cannot recover staked token");
+        require(_token != address(lpToken), "Operations: Cannot recover staked token");
         require(_token != address(wPAWToken), "Operations: Cannot recover reward token");
 
         uint256 balance = IERC20Metadata(_token).balanceOf(address(this));
@@ -1109,13 +1113,14 @@ contract PawFlexibleStake is Ownable, ReentrancyGuard, DividendStakingToken {
     }
 
     /*
-     * @notice Update APY
-     * @dev Only callable by owner. Change APY.
+     * @notice Update reward per second
+     * @dev Only callable by owner.
+     * @param _rewardPerTimeStamp: the reward per second
      */
-    function updateNewAPY(uint256 _newAPY) external onlyOwner {
+    function updateRewardPerTimeStamp(uint256 _rewardPerTimeStamp) external onlyOwner {
         _updatePool();
-        apy = _newAPY;
-        emit NewAPY(_newAPY);
+        rewardPerTimeStamp = _rewardPerTimeStamp;
+        emit NewRewardPerTimeStamp(_rewardPerTimeStamp);
     }
 
     /*
@@ -1125,10 +1130,10 @@ contract PawFlexibleStake is Ownable, ReentrancyGuard, DividendStakingToken {
      */
     function pendingReward(address _user) external view returns (uint256) {
         UserInfo storage user = userInfo[_user];
-        uint256 stakedTokenSupply = PAWToken.balanceOf(address(this));
+        uint256 stakedTokenSupply = lpToken.balanceOf(address(this));
         if (block.timestamp > lastRewardTimeStamp && stakedTokenSupply != 0) {
             uint256 multiplier = block.timestamp - lastRewardTimeStamp;
-            uint256 estimatedReward = multiplier * (((stakedTokenSupply * apy)/100) / (365 days));
+            uint256 estimatedReward = multiplier * rewardPerTimeStamp;
             if(estimatedReward > rewardTreasure){
                 estimatedReward = rewardTreasure;
             }
@@ -1147,7 +1152,7 @@ contract PawFlexibleStake is Ownable, ReentrancyGuard, DividendStakingToken {
             return;
         }
 
-        uint256 stakedTokenSupply = PAWToken.balanceOf(address(this));
+        uint256 stakedTokenSupply = lpToken.balanceOf(address(this));
 
         if (stakedTokenSupply == 0) {
             lastRewardTimeStamp = block.timestamp;
@@ -1155,7 +1160,7 @@ contract PawFlexibleStake is Ownable, ReentrancyGuard, DividendStakingToken {
         }
 
         uint256 multiplier = block.timestamp - lastRewardTimeStamp;
-        uint256 estimatedReward = multiplier * (((stakedTokenSupply * apy)/100) / (365 days));
+        uint256 estimatedReward = multiplier * rewardPerTimeStamp;
         uint256 realReward = _allocateReward(estimatedReward);
         accTokenPerShare = accTokenPerShare + (realReward * PRECISION_FACTOR) / stakedTokenSupply;
         lastRewardTimeStamp = block.timestamp;
@@ -1184,6 +1189,12 @@ contract PawFlexibleStake is Ownable, ReentrancyGuard, DividendStakingToken {
     }
 
     function totalStakedAmount() external view returns(uint256) {
-        return PAWToken.balanceOf(address(this)); 
+        return lpToken.balanceOf(address(this)); 
+    }
+
+    function estimateAPY() external view returns(uint256){
+        uint256 PAWEquivalentOfTotalLPStaking = (2 * PAWToken.balanceOf(address(lpToken))) * lpToken.balanceOf(address(this)) / lpToken.totalSupply();
+        return (rewardPerTimeStamp * (365 days) * 100) / PAWEquivalentOfTotalLPStaking;
+
     }
 }
