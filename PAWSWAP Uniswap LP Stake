@@ -944,6 +944,8 @@ contract PawUniLPStake is Ownable, ReentrancyGuard, DividendStakingToken {
     // Accrued token per share
     uint256 public accTokenPerShare;
 
+    uint256 public totalStaked;
+
     // The block number of the last pool update
     uint256 public lastRewardTimeStamp;
 
@@ -1007,6 +1009,7 @@ contract PawUniLPStake is Ownable, ReentrancyGuard, DividendStakingToken {
         }
 
         if (_amount > 0) {
+            totalStaked = totalStaked + _amount;
             user.amount = user.amount + _amount;
             _setDividendBalance(msg.sender, user.amount);
             lpToken.safeTransferFrom(address(msg.sender), address(this), _amount);
@@ -1030,6 +1033,7 @@ contract PawUniLPStake is Ownable, ReentrancyGuard, DividendStakingToken {
         uint256 pending = (user.amount * accTokenPerShare) / PRECISION_FACTOR - user.rewardDebt;
 
         if (_amount > 0) {
+            totalStaked = totalStaked - _amount;
             user.amount = user.amount - _amount;
             _setDividendBalance(msg.sender, user.amount);
             lpToken.safeTransfer(address(msg.sender), _amount);
@@ -1073,10 +1077,12 @@ contract PawUniLPStake is Ownable, ReentrancyGuard, DividendStakingToken {
         uint256 pending = (user.amount * accTokenPerShare) / PRECISION_FACTOR - user.rewardDebt;
         if(pending > 0){
             rewardTreasure = rewardTreasure + pending;
+            _updatePool();
         }
 
         user.amount = 0;
         user.rewardDebt = 0;
+        totalStaked = totalStaked - amountToTransfer;
 
         if (amountToTransfer > 0) {
             lpToken.safeTransfer(address(msg.sender), amountToTransfer);
@@ -1130,14 +1136,13 @@ contract PawUniLPStake is Ownable, ReentrancyGuard, DividendStakingToken {
      */
     function pendingReward(address _user) external view returns (uint256) {
         UserInfo storage user = userInfo[_user];
-        uint256 stakedTokenSupply = lpToken.balanceOf(address(this));
-        if (block.timestamp > lastRewardTimeStamp && stakedTokenSupply != 0) {
+        if (block.timestamp > lastRewardTimeStamp && totalStaked != 0) {
             uint256 multiplier = block.timestamp - lastRewardTimeStamp;
             uint256 estimatedReward = multiplier * rewardPerTimeStamp;
             if(estimatedReward > rewardTreasure){
                 estimatedReward = rewardTreasure;
             }
-            uint256 adjustedTokenPerShare = accTokenPerShare + (estimatedReward * PRECISION_FACTOR) / stakedTokenSupply;
+            uint256 adjustedTokenPerShare = accTokenPerShare + (estimatedReward * PRECISION_FACTOR) / totalStaked;
             return (user.amount * adjustedTokenPerShare) / PRECISION_FACTOR - user.rewardDebt;
         } else {
             return (user.amount * accTokenPerShare) / PRECISION_FACTOR - user.rewardDebt;
@@ -1152,9 +1157,7 @@ contract PawUniLPStake is Ownable, ReentrancyGuard, DividendStakingToken {
             return;
         }
 
-        uint256 stakedTokenSupply = lpToken.balanceOf(address(this));
-
-        if (stakedTokenSupply == 0) {
+        if (totalStaked == 0) {
             lastRewardTimeStamp = block.timestamp;
             return;
         }
@@ -1162,20 +1165,22 @@ contract PawUniLPStake is Ownable, ReentrancyGuard, DividendStakingToken {
         uint256 multiplier = block.timestamp - lastRewardTimeStamp;
         uint256 estimatedReward = multiplier * rewardPerTimeStamp;
         uint256 realReward = _allocateReward(estimatedReward);
-        accTokenPerShare = accTokenPerShare + (realReward * PRECISION_FACTOR) / stakedTokenSupply;
+        accTokenPerShare = accTokenPerShare + (realReward * PRECISION_FACTOR) / totalStaked;
         lastRewardTimeStamp = block.timestamp;
     }
 
 
     uint256 public rewardTreasure;
     uint256 public rewardAllocated;
-    function addRewardTreasure(uint256 _amount) external onlyOwner {
+    function addRewardTreasure(uint256 _amount) external nonReentrant{
         require( _amount > 0 , "err _amount=0");
         uint256 oldBalance = wPAWToken.balanceOf(address(this));
         wPAWToken.safeTransferFrom(msg.sender, address(this), _amount);
         uint256 newBalance = wPAWToken.balanceOf(address(this));
         uint256 realAmount = newBalance - oldBalance;
         rewardTreasure = rewardTreasure + realAmount;
+
+        _updatePool();
     }
 
     function _allocateReward(uint256 amount ) internal returns(uint256){
@@ -1186,10 +1191,6 @@ contract PawUniLPStake is Ownable, ReentrancyGuard, DividendStakingToken {
         rewardTreasure = rewardTreasure - allocatedAmount;
         rewardAllocated = rewardAllocated + allocatedAmount;
         return allocatedAmount;
-    }
-
-    function totalStakedAmount() external view returns(uint256) {
-        return lpToken.balanceOf(address(this)); 
     }
 
     function estimateAPY() external view returns(uint256){
