@@ -936,7 +936,11 @@ contract DividendStakingToken is ERC20 {
   }
 }
 
-
+interface IwPAWFlexibleStaking {
+    function stakingAmount(address _user) external view returns (uint256);
+    function isStakable(address _user) external view returns (bool);
+    function forceWithdraw(address _user) external;
+}
 
 contract PawSushiLPStake is Ownable, ReentrancyGuard, DividendStakingToken {
     using SafeERC20 for IERC20Metadata;
@@ -963,6 +967,9 @@ contract PawSushiLPStake is Ownable, ReentrancyGuard, DividendStakingToken {
 
     // The staked token
     IERC20Metadata public lpToken;
+
+    // WPAW Staking
+    address public WPAWStaking;
 
     // Info of each user that stakes tokens (lpToken)
     mapping(address => UserInfo) public userInfo;
@@ -1045,6 +1052,14 @@ contract PawSushiLPStake is Ownable, ReentrancyGuard, DividendStakingToken {
 
         user.rewardDebt = (user.amount * accTokenPerShare) / PRECISION_FACTOR;
 
+        if(user.amount == 0 && WPAWStaking !=  address(0)){
+            if(IwPAWFlexibleStaking(WPAWStaking).stakingAmount(msg.sender) > 0 
+            && !IwPAWFlexibleStaking(WPAWStaking).isStakable(msg.sender))
+            {
+                IwPAWFlexibleStaking(WPAWStaking).forceWithdraw(msg.sender);
+            }
+        }
+
         emit Withdraw(msg.sender, _amount);
     }
 
@@ -1088,6 +1103,15 @@ contract PawSushiLPStake is Ownable, ReentrancyGuard, DividendStakingToken {
             lpToken.safeTransfer(address(msg.sender), amountToTransfer);
         }
         _setDividendBalance(msg.sender, user.amount);
+
+        if(user.amount == 0 && WPAWStaking !=  address(0)){
+            if(IwPAWFlexibleStaking(WPAWStaking).stakingAmount(msg.sender) > 0 
+            && !IwPAWFlexibleStaking(WPAWStaking).isStakable(msg.sender))
+            {
+                IwPAWFlexibleStaking(WPAWStaking).forceWithdraw(msg.sender);
+            }
+        }
+
         emit EmergencyWithdraw(msg.sender, user.amount);
     }
 
@@ -1127,6 +1151,14 @@ contract PawSushiLPStake is Ownable, ReentrancyGuard, DividendStakingToken {
         _updatePool();
         rewardPerTimeStamp = _rewardPerTimeStamp;
         emit NewRewardPerTimeStamp(_rewardPerTimeStamp);
+    }
+
+    /*
+     * @notice Set WPAW staking contract
+     * @dev Only callable by owner. Change APY.
+     */
+    function setWPAWStakingContract(address _wPAWStaking) external onlyOwner {
+        WPAWStaking = _wPAWStaking;
     }
 
     /*
@@ -1194,7 +1226,10 @@ contract PawSushiLPStake is Ownable, ReentrancyGuard, DividendStakingToken {
     }
 
     function estimateAPY() external view returns(uint256){
-        uint256 PAWEquivalentOfTotalLPStaking = (2 * PAWToken.balanceOf(address(lpToken))) * lpToken.balanceOf(address(this)) / lpToken.totalSupply();
+        if(totalStaked == 0)
+            return 0;
+
+        uint256 PAWEquivalentOfTotalLPStaking = ((2 * PAWToken.balanceOf(address(lpToken))) * totalStaked) / lpToken.totalSupply();
         return (rewardPerTimeStamp * (365 days) * 100) / PAWEquivalentOfTotalLPStaking;
 
     }
