@@ -936,6 +936,11 @@ contract DividendStakingToken is ERC20 {
   }
 }
 
+interface IwPAWFlexibleStaking {
+    function stakingAmount(address _user) external view returns (uint256);
+    function isStakable(address _user) external view returns (bool);
+    function forceWithdraw(address _user) external;
+}
 
 
 contract PawLockedStake is Ownable, ReentrancyGuard, DividendStakingToken {
@@ -961,11 +966,17 @@ contract PawLockedStake is Ownable, ReentrancyGuard, DividendStakingToken {
     // The staked token
     IERC20Metadata public PAWToken;
 
+    // WPAW Staking
+    address public WPAWStaking;
+
     // lock duration
-    uint256 lockDuration;
+    uint256 public lockDuration;
 
     // early withdraw penalty in percent
-    uint256 earlyWithdrawPenalty;
+    uint256 public earlyWithdrawPenalty;
+
+    // total early withdraw penalty
+    uint256 public totalPenalty;
 
     // Info of each user that stakes tokens (PAWToken)
     mapping(address => UserInfo) public userInfo;
@@ -1053,6 +1064,14 @@ contract PawLockedStake is Ownable, ReentrancyGuard, DividendStakingToken {
 
         user.rewardDebt = (user.amount * accTokenPerShare) / PRECISION_FACTOR;
 
+        if(user.amount == 0 && WPAWStaking !=  address(0)){
+            if(IwPAWFlexibleStaking(WPAWStaking).stakingAmount(msg.sender) > 0 
+            && !IwPAWFlexibleStaking(WPAWStaking).isStakable(msg.sender))
+            {
+                IwPAWFlexibleStaking(WPAWStaking).forceWithdraw(msg.sender);
+            }
+        }
+
         emit Withdraw(msg.sender, _amount);
     }
 
@@ -1081,11 +1100,13 @@ contract PawLockedStake is Ownable, ReentrancyGuard, DividendStakingToken {
     function emergencyWithdraw() external nonReentrant {
         UserInfo storage user = userInfo[msg.sender];
         uint256 amountToTransfer = user.amount;
+
+        totalStaked = totalStaked - amountToTransfer;
+
         if(block.timestamp < user.unlockTime){
             uint256 penalty = amountToTransfer * earlyWithdrawPenalty / 100;
             amountToTransfer = amountToTransfer - penalty;
-            // Add penalty amount to reward treasure;
-            rewardTreasure = rewardTreasure + penalty;
+            totalPenalty = totalPenalty + penalty;
         }
 
         uint256 pending = (user.amount * accTokenPerShare) / PRECISION_FACTOR - user.rewardDebt;
@@ -1096,13 +1117,31 @@ contract PawLockedStake is Ownable, ReentrancyGuard, DividendStakingToken {
 
         user.amount = 0;
         user.rewardDebt = 0;
-        totalStaked = totalStaked - amountToTransfer;
 
         if (amountToTransfer > 0) {
             PAWToken.safeTransfer(address(msg.sender), amountToTransfer);
         }
         _setDividendBalance(msg.sender, user.amount);
+
+        if(user.amount == 0 && WPAWStaking !=  address(0)){
+            if(IwPAWFlexibleStaking(WPAWStaking).stakingAmount(msg.sender) > 0 
+            && !IwPAWFlexibleStaking(WPAWStaking).isStakable(msg.sender))
+            {
+                IwPAWFlexibleStaking(WPAWStaking).forceWithdraw(msg.sender);
+            }
+        }
+
         emit EmergencyWithdraw(msg.sender, user.amount);
+    }
+
+    /*
+     * @notice Withdraw Penalty for future usage
+     * @dev Only callable by owner.
+     */
+    function withdrawPenalty() external onlyOwner {
+        require(totalPenalty > 0, "No penalty now");
+        PAWToken.safeTransfer(address(msg.sender), totalPenalty);
+        totalPenalty = 0;
     }
 
     /*
@@ -1159,6 +1198,14 @@ contract PawLockedStake is Ownable, ReentrancyGuard, DividendStakingToken {
         _updatePool();
         apy = _newAPY;
         emit NewAPY(_newAPY);
+    }
+
+    /*
+     * @notice Set WPAW staking contract
+     * @dev Only callable by owner. Change APY.
+     */
+    function setWPAWStakingContract(address _wPAWStaking) external onlyOwner {
+        WPAWStaking = _wPAWStaking;
     }
 
     /*
