@@ -992,7 +992,7 @@ contract PawUniLPStake is Ownable, ReentrancyGuard, DividendStakingToken {
     constructor()  DividendStakingToken("Paw Stake Tracker", "stPAWunilp") {
         lpToken = IERC20Metadata(0x428B03cCd51ee4FCFf7DF6c7DEaE4139A4B347eD); //UniSwap v2 PAW-ETH
         PAWToken = IERC20Metadata(0xDc63269eA166b70d4780b3A11F5C825C2b761B01); //PAW
-        wPAWToken = IERC20Metadata(0x083Af0FB9A8982E09e43AC718aeA9773E28c7f06); //wPAW
+        wPAWToken = IERC20Metadata(0xFF9E32AaF15953EC3F69FE899D220A705ce06dD0); //wPAW
         // Set the lastRewardTimeStamp as the current timestamp
         lastRewardTimeStamp = block.timestamp;
 
@@ -1123,6 +1123,8 @@ contract PawUniLPStake is Ownable, ReentrancyGuard, DividendStakingToken {
         require(_amount <= rewardTreasure, "Exceed withdrawable amount");
         wPAWToken.safeTransfer(address(msg.sender), _amount);
         rewardTreasure = rewardTreasure - _amount;
+
+        _updatePool();
     }
 
     /**
