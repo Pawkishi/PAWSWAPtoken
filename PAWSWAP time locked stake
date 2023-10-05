@@ -982,10 +982,18 @@ contract PawLockedStake is Ownable, ReentrancyGuard, DividendStakingToken {
     mapping(address => UserInfo) public userInfo;
 
     struct UserInfo {
-        uint256 amount; // How many staked tokens the user has provided
+        uint256 totalAmount; // How many staked tokens the user has provided
         uint256 rewardDebt; // Reward debt
-        uint256 unlockTime;
+        DepositInfo[] deposits;
     }
+
+    struct DepositInfo {
+        uint256 id;
+        uint256 amount;
+        uint256 startTime;
+    }
+
+    uint256 public numberDeposit;
 
     event Deposit(address indexed user, uint256 amount);
     event EmergencyWithdraw(address indexed user, uint256 amount);
@@ -999,13 +1007,13 @@ contract PawLockedStake is Ownable, ReentrancyGuard, DividendStakingToken {
      */
     constructor()  DividendStakingToken("Paw Stake Tracker", "stPAWlock") {
         PAWToken = IERC20Metadata(0xDc63269eA166b70d4780b3A11F5C825C2b761B01); //PAW
-        wPAWToken = IERC20Metadata(0x083Af0FB9A8982E09e43AC718aeA9773E28c7f06); //wPAW
+        wPAWToken = IERC20Metadata(0xFF9E32AaF15953EC3F69FE899D220A705ce06dD0); //wPAW
         // Set the lastRewardTimeStamp as the current timestamp
         lastRewardTimeStamp = block.timestamp;
 
-        apy = 20;
+        apy = 8; //8%
         lockDuration = 13 weeks;
-        earlyWithdrawPenalty = 10; // 10%
+        earlyWithdrawPenalty = 10; //10%
     }
 
     /*
@@ -1015,25 +1023,25 @@ contract PawLockedStake is Ownable, ReentrancyGuard, DividendStakingToken {
     function deposit(uint256 _amount) external nonReentrant {
         UserInfo storage user = userInfo[msg.sender];
 
-        user.unlockTime = block.timestamp + lockDuration;
-
         _updatePool();
 
-        if (user.amount > 0) {
-            uint256 pending = (user.amount * accTokenPerShare) / PRECISION_FACTOR - user.rewardDebt;
+        if (user.totalAmount > 0) {
+            uint256 pending = (user.totalAmount * accTokenPerShare) / PRECISION_FACTOR - user.rewardDebt;
             if (pending > 0) {
                 wPAWToken.safeTransfer(address(msg.sender), pending);
             }
         }
 
         if (_amount > 0) {
-            totalStaked = totalStaked + _amount;
-            user.amount = user.amount + _amount;
-            _setDividendBalance(msg.sender, user.amount);
+            totalStaked += _amount;
+            user.totalAmount += _amount;
+            user.deposits.push(DepositInfo(numberDeposit++, _amount, block.timestamp));
+
+            _setDividendBalance(msg.sender, user.totalAmount);
             PAWToken.safeTransferFrom(address(msg.sender), address(this), _amount);
         }
 
-        user.rewardDebt = (user.amount * accTokenPerShare) / PRECISION_FACTOR;
+        user.rewardDebt = (user.totalAmount * accTokenPerShare) / PRECISION_FACTOR;
 
         emit Deposit(msg.sender, _amount);
     }
@@ -1042,29 +1050,46 @@ contract PawLockedStake is Ownable, ReentrancyGuard, DividendStakingToken {
      * @notice Withdraw staked tokens and collect reward tokens
      * @param _amount: amount to withdraw (in wPAWToken)
      */
-    function withdraw(uint256 _amount) external nonReentrant {
+    uint256 private MAX = 2**256 - 1;
+    function withdraw(uint256 _id) external nonReentrant {
         UserInfo storage user = userInfo[msg.sender];
-        require(user.amount >= _amount, "Amount to withdraw too high");
-        require(block.timestamp >= user.unlockTime, "Cant do normal withdraw within lock duration");
+        require(user.deposits.length > 0, "Error: No active staking");
+
+        uint256 indexOfId = MAX;
+        for(uint256 i = 0; i < user.deposits.length; i++){
+            if(user.deposits[i].id == _id){
+                indexOfId = i;
+                break;
+            }
+        }
+        require(indexOfId != MAX, "Error: Invalid deposit Id");
 
         _updatePool();
 
-        uint256 pending = (user.amount * accTokenPerShare) / PRECISION_FACTOR - user.rewardDebt;
-
-        if (_amount > 0) {
-            totalStaked = totalStaked - _amount;
-            user.amount = user.amount - _amount;
-            _setDividendBalance(msg.sender, user.amount);
-            PAWToken.safeTransfer(address(msg.sender), _amount);
-        }
-
+        uint256 pending = (user.totalAmount * accTokenPerShare) / PRECISION_FACTOR - user.rewardDebt;
         if (pending > 0) {
             wPAWToken.safeTransfer(address(msg.sender), pending);
         }
 
-        user.rewardDebt = (user.amount * accTokenPerShare) / PRECISION_FACTOR;
+        uint256 amount = user.deposits[indexOfId].amount;
+        uint256 withdrawAbleAmount = amount;
+        if(block.timestamp < (user.deposits[indexOfId].startTime + lockDuration)){
+            uint256 penalty = withdrawAbleAmount * earlyWithdrawPenalty / 100;
+            withdrawAbleAmount -= penalty;
+            totalPenalty += penalty;
+        }
+        PAWToken.safeTransfer(address(msg.sender), withdrawAbleAmount);
 
-        if(user.amount == 0 && WPAWStaking !=  address(0)){
+        // Remove from deposits list
+        user.deposits[indexOfId] = user.deposits[user.deposits.length - 1];
+        user.deposits.pop();
+
+        totalStaked -= amount;
+        user.totalAmount -= amount;
+        user.rewardDebt = (user.totalAmount * accTokenPerShare) / PRECISION_FACTOR;
+        _setDividendBalance(msg.sender, user.totalAmount);
+
+        if(user.totalAmount == 0 && WPAWStaking !=  address(0)){
             if(IwPAWFlexibleStaking(WPAWStaking).stakingAmount(msg.sender) > 0 
             && !IwPAWFlexibleStaking(WPAWStaking).isStakable(msg.sender))
             {
@@ -1072,7 +1097,7 @@ contract PawLockedStake is Ownable, ReentrancyGuard, DividendStakingToken {
             }
         }
 
-        emit Withdraw(msg.sender, _amount);
+        emit Withdraw(msg.sender, amount);
     }
 
 
@@ -1084,11 +1109,11 @@ contract PawLockedStake is Ownable, ReentrancyGuard, DividendStakingToken {
 
         _updatePool();
 
-        uint256 pending = (user.amount * accTokenPerShare) / PRECISION_FACTOR - user.rewardDebt;
+        uint256 pending = (user.totalAmount * accTokenPerShare) / PRECISION_FACTOR - user.rewardDebt;
         require (pending > 0, "No reward to claim"); 
         wPAWToken.safeTransfer(address(msg.sender), pending);
 
-        user.rewardDebt = (user.amount * accTokenPerShare) / PRECISION_FACTOR;
+        user.rewardDebt = (user.totalAmount * accTokenPerShare) / PRECISION_FACTOR;
 
         emit Claim(msg.sender, pending);
     }
@@ -1099,31 +1124,34 @@ contract PawLockedStake is Ownable, ReentrancyGuard, DividendStakingToken {
      */
     function emergencyWithdraw() external nonReentrant {
         UserInfo storage user = userInfo[msg.sender];
-        uint256 amountToTransfer = user.amount;
+        require(user.deposits.length > 0, "Error: No active staking");
+        _updatePool();
 
-        totalStaked = totalStaked - amountToTransfer;
-
-        if(block.timestamp < user.unlockTime){
-            uint256 penalty = amountToTransfer * earlyWithdrawPenalty / 100;
-            amountToTransfer = amountToTransfer - penalty;
-            totalPenalty = totalPenalty + penalty;
+        uint256 pending = (user.totalAmount * accTokenPerShare) / PRECISION_FACTOR - user.rewardDebt;
+        if (pending > 0) {
+            rewardTreasure += pending;
+            _updatePool();        
         }
-
-        uint256 pending = (user.amount * accTokenPerShare) / PRECISION_FACTOR - user.rewardDebt;
-        if(pending > 0){
-            rewardTreasure = rewardTreasure + pending;
-            _updatePool();
+        
+        uint256 withdrawAbleAmount = 0;
+        for(uint i = user.deposits.length; i > 0; i --){
+            withdrawAbleAmount += user.deposits[i - 1].amount;
+            if(block.timestamp < (user.deposits[i - 1].startTime + lockDuration)){
+                uint256 penalty = user.deposits[i - 1].amount * earlyWithdrawPenalty / 100;
+                withdrawAbleAmount -= penalty;
+                totalPenalty += penalty;
+            }
+            user.deposits.pop();
         }
+        PAWToken.safeTransfer(address(msg.sender), withdrawAbleAmount);
 
-        user.amount = 0;
+        uint256 totalAmount  = user.totalAmount;
+        totalStaked -= user.totalAmount;
+        user.totalAmount = 0;
         user.rewardDebt = 0;
+        _setDividendBalance(msg.sender, 0);
 
-        if (amountToTransfer > 0) {
-            PAWToken.safeTransfer(address(msg.sender), amountToTransfer);
-        }
-        _setDividendBalance(msg.sender, user.amount);
-
-        if(user.amount == 0 && WPAWStaking !=  address(0)){
+        if(user.totalAmount == 0 && WPAWStaking !=  address(0)){
             if(IwPAWFlexibleStaking(WPAWStaking).stakingAmount(msg.sender) > 0 
             && !IwPAWFlexibleStaking(WPAWStaking).isStakable(msg.sender))
             {
@@ -1131,7 +1159,14 @@ contract PawLockedStake is Ownable, ReentrancyGuard, DividendStakingToken {
             }
         }
 
-        emit EmergencyWithdraw(msg.sender, user.amount);
+        emit EmergencyWithdraw(msg.sender, totalAmount);
+    }
+
+    /*
+     * @notice list of deposit
+     */
+    function depositInfoOf(address _account) public view returns (DepositInfo[] memory){
+        return userInfo[_account].deposits;
     }
 
     /*
@@ -1151,7 +1186,7 @@ contract PawLockedStake is Ownable, ReentrancyGuard, DividendStakingToken {
     function emergencyRewardWithdraw(uint256 _amount) external onlyOwner {
         require(_amount <= rewardTreasure, "Exceed withdrawable amount");
         wPAWToken.safeTransfer(address(msg.sender), _amount);
-        rewardTreasure = rewardTreasure - _amount;
+        rewardTreasure -= _amount;
     }
 
     /**
@@ -1222,9 +1257,9 @@ contract PawLockedStake is Ownable, ReentrancyGuard, DividendStakingToken {
                 estimatedReward = rewardTreasure;
             }
             uint256 adjustedTokenPerShare = accTokenPerShare + (estimatedReward * PRECISION_FACTOR) / totalStaked;
-            return (user.amount * adjustedTokenPerShare) / PRECISION_FACTOR - user.rewardDebt;
+            return (user.totalAmount * adjustedTokenPerShare) / PRECISION_FACTOR - user.rewardDebt;
         } else {
-            return (user.amount * accTokenPerShare) / PRECISION_FACTOR - user.rewardDebt;
+            return (user.totalAmount * accTokenPerShare) / PRECISION_FACTOR - user.rewardDebt;
         }
     }
 
@@ -1244,7 +1279,7 @@ contract PawLockedStake is Ownable, ReentrancyGuard, DividendStakingToken {
         uint256 multiplier = block.timestamp - lastRewardTimeStamp;
         uint256 estimatedReward = multiplier * (((totalStaked * apy)/100) / (365 days));
         uint256 realReward = _allocateReward(estimatedReward);
-        accTokenPerShare = accTokenPerShare + (realReward * PRECISION_FACTOR) / totalStaked;
+        accTokenPerShare += (realReward * PRECISION_FACTOR) / totalStaked;
         lastRewardTimeStamp = block.timestamp;
     }
 
@@ -1257,7 +1292,7 @@ contract PawLockedStake is Ownable, ReentrancyGuard, DividendStakingToken {
         wPAWToken.safeTransferFrom(msg.sender, address(this), _amount);
         uint256 newBalance = wPAWToken.balanceOf(address(this));
         uint256 realAmount = newBalance - oldBalance;
-        rewardTreasure = rewardTreasure + realAmount;
+        rewardTreasure += realAmount;
 
         _updatePool();
     }
@@ -1267,8 +1302,8 @@ contract PawLockedStake is Ownable, ReentrancyGuard, DividendStakingToken {
         if( amount >= rewardTreasure ){
             allocatedAmount = rewardTreasure;
         }
-        rewardTreasure = rewardTreasure - allocatedAmount;
-        rewardAllocated = rewardAllocated + allocatedAmount;
+        rewardTreasure -= allocatedAmount;
+        rewardAllocated += allocatedAmount;
         return allocatedAmount;
     }
 
