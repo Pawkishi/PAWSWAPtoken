@@ -1251,6 +1251,13 @@ interface IERC721 is IERC165 {
      * See {setApprovalForAll}
      */
     function isApprovedForAll(address owner, address operator) external view returns (bool);
+
+    /**
+     * @dev Returns a token ID owned by `owner` at a given `index` of its token list.
+     * Use along with {balanceOf} to enumerate all of ``owner``'s tokens.
+     */
+    function tokenOfOwnerByIndex(address owner, uint256 index) external view returns (uint256 tokenId);
+
 }
 
 
@@ -1934,7 +1941,7 @@ contract PawUniV3LPStake is Ownable, ReentrancyGuard, DividendStakingToken {
         nonfungiblePositionManager = INonfungiblePositionManager(0xC36442b4a4522E871399CD717aBDD847Ab11FE88);
 
         lpPool = IUniswapV3Pool(0xbCC489a50f0E2f09Aec2d6F33ffe950cb6C39295); //UniSwap v3 PAW-ETH
-        wPAWToken = IERC20Metadata(0x083Af0FB9A8982E09e43AC718aeA9773E28c7f06); //wPAW
+        wPAWToken = IERC20Metadata(0xFF9E32AaF15953EC3F69FE899D220A705ce06dD0); //wPAW
         // Set the lastRewardTimeStamp as the current timestamp
         lastRewardTimeStamp = block.timestamp;
 
@@ -1985,9 +1992,9 @@ contract PawUniV3LPStake is Ownable, ReentrancyGuard, DividendStakingToken {
 
         uint256 price = FullMath.mulDiv(uint256(sqrtPriceX96), uint256(sqrtPriceX96), 1 << 192);
 
-        (uint256 amount0, uint256 amount1) = LiquidityAmounts.getAmountsForLiquidity(sqrtPriceX96, sqrtRatioAX96, sqrtRatioBX96, cache.liquidity);
+        (uint256 amountETH, uint256 amountPAW) = LiquidityAmounts.getAmountsForLiquidity(sqrtPriceX96, sqrtRatioAX96, sqrtRatioBX96, cache.liquidity);
 
-        uint256 estimatingTotalPAW = amount1 + amount0 * price;
+        uint256 estimatingTotalPAW = amountPAW + amountETH * price;
 
         estimatingPawOfNft[_tokenId] = estimatingTotalPAW;
 
@@ -2115,6 +2122,8 @@ contract PawUniV3LPStake is Ownable, ReentrancyGuard, DividendStakingToken {
         require(_amount <= rewardTreasure, "Exceed withdrawable amount");
         wPAWToken.safeTransfer(address(msg.sender), _amount);
         rewardTreasure = rewardTreasure - _amount;
+
+        _updatePool()
     }
 
     /**
@@ -2221,5 +2230,43 @@ contract PawUniV3LPStake is Ownable, ReentrancyGuard, DividendStakingToken {
             return 0;
 
         return (rewardPerTimeStamp * (365 days) * 100) / totalStaked;
+    }
+
+    function getPawEthV3NftLpOf(address _user) public view returns(uint256[] memory){
+        uint256[] memory listNft = new uint256[](99); // Expect ppl dont have that much nft of same pair :D
+        uint256 count = 0;
+
+        uint256 balance = nonfungiblePositionManager.balanceOf(_user);
+        for(uint256 i = 0; i < balance; i++){
+            uint256 _id = nonfungiblePositionManager.tokenOfOwnerByIndex(_user, i);
+
+            DepositCache memory cache;
+            (
+                ,
+                ,
+                cache.token0,
+                cache.token1,
+                ,
+                cache.tickLower,
+                cache.tickUpper,
+                cache.liquidity,
+                ,
+                ,
+                ,
+
+            ) = nonfungiblePositionManager.positions(_id);
+
+            if(cache.token0 == lpPool.token0() && cache.token1 == lpPool.token1()){
+               listNft[count] = _id;
+               count ++;
+               if(count == 99) break;
+            }
+        }
+        uint256[] memory listPawEthNft = new uint256[](count);
+        for(uint256 j = 0; j < count; j++){
+            listPawEthNft[j] = listNft[j];
+        }
+
+        return listPawEthNft;
     }
 }
