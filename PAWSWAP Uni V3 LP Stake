@@ -2123,7 +2123,7 @@ contract PawUniV3LPStake is Ownable, ReentrancyGuard, DividendStakingToken {
         wPAWToken.safeTransfer(address(msg.sender), _amount);
         rewardTreasure = rewardTreasure - _amount;
 
-        _updatePool()
+        _updatePool();
     }
 
     /**
